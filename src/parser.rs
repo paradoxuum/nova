@@ -24,6 +24,8 @@ pub enum Statement {
 
 pub trait Visitor<T> {
     fn visit_expression(&mut self, expr: &Expression) -> T;
+
+    fn visit_statement(&mut self, stmt: &Statement) -> T;
 }
 
 pub struct Parser {
@@ -304,7 +306,11 @@ impl Parser {
     fn binary(&mut self) -> Result<Expression> {
         let mut expr = self.unary()?;
 
-        while self.match_token(TokenKind::Plus) || self.match_token(TokenKind::Minus) {
+        while self.match_token(TokenKind::Plus)
+            || self.match_token(TokenKind::Minus)
+            || self.match_token(TokenKind::Multiply)
+            || self.match_token(TokenKind::Divide)
+        {
             let operator = self.previous().clone();
             let right = self.unary()?;
             expr = Expression::Binary(Box::new(expr), operator, Box::new(right));

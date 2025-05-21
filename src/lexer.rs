@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use color_eyre::eyre::{eyre, Result};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,14 +55,27 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub lexeme: String,
-    pub literal: Option<TokenLiteral>,
+    pub literal: Option<Literal>,
     pub line: usize,
 }
 
 #[derive(Debug, Clone)]
-pub enum TokenLiteral {
+pub enum Literal {
     String(String),
     Number(f64),
+    Boolean(bool),
+    Nil,
+}
+
+impl Display for Literal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Literal::String(s) => write!(f, "{}", s),
+            Literal::Number(n) => write!(f, "{}", n),
+            Literal::Boolean(b) => write!(f, "{}", b),
+            Literal::Nil => write!(f, "nil"),
+        }
+    }
 }
 
 pub struct Lexer<'a> {
@@ -112,7 +127,7 @@ impl Lexer<'_> {
         let start = self.pos;
         self.pos += 1;
 
-        let mut literal: Option<TokenLiteral> = None;
+        let mut literal: Option<Literal> = None;
         let kind = match current_char {
             '+' => Ok(TokenKind::Plus),
             '-' => Ok(TokenKind::Minus),
@@ -239,7 +254,7 @@ impl Lexer<'_> {
         }
     }
 
-    fn string(&mut self) -> Result<TokenLiteral> {
+    fn string(&mut self) -> Result<Literal> {
         self.pos += 1;
         let start_pos = self.pos;
         while self.pos < self.input.len() && self.current_char() != '"' {
@@ -252,10 +267,10 @@ impl Lexer<'_> {
 
         let string = &self.input[start_pos..self.pos];
         self.pos += 1; // Skip the closing quote
-        Ok(TokenLiteral::String(string.to_string()))
+        Ok(Literal::String(string.to_string()))
     }
 
-    fn number(&mut self) -> Result<TokenLiteral> {
+    fn number(&mut self) -> Result<Literal> {
         let start_pos = self.pos;
         while self.pos < self.input.len() {
             let current_char = self.current_char();
@@ -275,7 +290,7 @@ impl Lexer<'_> {
         let number_str = &self.input[start_pos..self.pos];
         number_str
             .parse::<f64>()
-            .map(TokenLiteral::Number)
+            .map(Literal::Number)
             .map_err(|_| eyre!("Invalid number: {}", number_str))
     }
 

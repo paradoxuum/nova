@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use color_eyre::eyre::{Context, Result};
+use parser::{Expression, Statement};
 
+mod interpreter;
 mod lexer;
 mod parser;
 
@@ -14,6 +16,8 @@ struct Args {
 }
 
 fn repl() -> Result<()> {
+    let mut interpreter = interpreter::Interpreter::new();
+
     loop {
         let mut input = String::new();
         print!("> ");
@@ -26,17 +30,25 @@ fn repl() -> Result<()> {
             .wrap_err("Failed to read line")?;
 
         if input.trim().is_empty() {
-            return Ok(());
+            continue;
         }
 
         let mut lexer = lexer::Lexer::new(&input);
         let tokens = lexer.scan()?;
 
-        println!("Tokens: {:?}", tokens);
-
         let mut parser = parser::Parser::new(tokens.clone());
         let stmts = parser.parse().wrap_err("Failed to parse expression")?;
-        println!("Output: {:?}", stmts);
+
+        let first_stmt = stmts.first().unwrap();
+        let expr = match first_stmt {
+            Statement::Print(expr) => expr,
+            _ => todo!(),
+        };
+
+        let result = interpreter.interpret(expr)?;
+        if let Some(literal) = result {
+            println!("{}", literal);
+        }
     }
 }
 
