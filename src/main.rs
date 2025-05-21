@@ -1,10 +1,11 @@
+use std::io::Write;
 use std::path::PathBuf;
-use std::{fs, io::Write};
 
 use clap::Parser;
 use color_eyre::eyre::{Context, Result};
 
 mod lexer;
+mod parser;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -30,7 +31,12 @@ fn repl() -> Result<()> {
 
         let mut lexer = lexer::Lexer::new(&input);
         let tokens = lexer.scan()?;
+
         println!("Tokens: {:?}", tokens);
+
+        let mut parser = parser::Parser::new(tokens.clone());
+        let stmts = parser.parse().wrap_err("Failed to parse expression")?;
+        println!("Output: {:?}", stmts);
     }
 }
 
