@@ -1,16 +1,19 @@
 use color_eyre::eyre::{eyre, Result};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Token {
+pub enum TokenKind {
     // Single-character tokens
     Assign,
-    Semicolon,
     Plus,
     Minus,
     Multiply,
     Divide,
     LParen,
     RParen,
+    LBrace,
+    RBrace,
+    Semicolon,
+    Comma,
 
     // Logical operators
     And,
@@ -24,10 +27,9 @@ pub enum Token {
     LessEqual,
 
     // Literals
-    Identifier(String),
-    StringLiteral(String),
-    Number(f64),
-    Boolean(bool),
+    Identifier,
+    String,
+    Number,
 
     // Keywords
     If,
@@ -36,13 +38,29 @@ pub enum Token {
     For,
     Return,
     Function,
-    Var,
     Let,
     Const,
     Class,
-    Null,
+    Nil,
+    True,
+    False,
+    Print,
 
     Eof,
+}
+
+#[derive(Debug, Clone)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub lexeme: String,
+    pub literal: Option<TokenLiteral>,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum TokenLiteral {
+    String(String),
+    Number(f64),
 }
 
 pub struct Lexer<'a> {
@@ -60,9 +78,6 @@ impl Lexer<'_> {
 
         while self.pos < self.input.len() {
             let token = self.next_token()?;
-            if token == Token::Eof {
-                break;
-            }
             tokens.push(token);
         }
 
@@ -70,127 +85,136 @@ impl Lexer<'_> {
     }
 
     pub fn next_token(&mut self) -> Result<Token> {
-        while self.pos < self.input.len() {
-            let current_char = self.current_char();
+        // Skip whitespace
+        while self.current_char().is_ascii_whitespace() {
+            self.pos += 1;
 
-            if current_char.is_whitespace() {
-                self.skip_whitespace();
-                continue;
+            if self.at_end() {
+                return Ok(Token {
+                    kind: TokenKind::Eof,
+                    lexeme: "EOF".to_string(),
+                    literal: None,
+                    line: 0,
+                });
             }
-
-            if current_char.is_ascii_digit() {
-                return Ok(Token::Number(self.number()?));
-            }
-
-            if current_char == '"' {
-                return Ok(Token::StringLiteral(self.string_literal()?));
-            }
-
-            match current_char {
-                '+' => {
-                    self.pos += 1;
-                    return Ok(Token::Plus);
-                }
-                '-' => {
-                    self.pos += 1;
-                    return Ok(Token::Minus);
-                }
-                '*' => {
-                    self.pos += 1;
-                    return Ok(Token::Multiply);
-                }
-                '/' => {
-                    if self.peek_next() == Some('/') {
-                        while self.pos < self.input.len() && self.current_char() != '\n' {
-                            self.pos += 1;
-                        }
-                        continue; // Skip the rest of the line
-                    }
-                    self.pos += 1;
-                    return Ok(Token::Divide);
-                }
-                '(' => {
-                    self.pos += 1;
-                    return Ok(Token::LParen);
-                }
-                ')' => {
-                    self.pos += 1;
-                    return Ok(Token::RParen);
-                }
-                '=' => {
-                    self.pos += 1;
-                    if self.current_char() == '=' {
-                        self.pos += 1;
-                        return Ok(Token::Equal);
-                    }
-                    return Ok(Token::Assign);
-                }
-                ';' => {
-                    self.pos += 1;
-                    return Ok(Token::Semicolon);
-                }
-                '>' => {
-                    self.pos += 1;
-                    if self.current_char() == '=' {
-                        self.pos += 1;
-                        return Ok(Token::GreaterEqual);
-                    }
-                    return Ok(Token::Greater);
-                }
-                '<' => {
-                    self.pos += 1;
-                    if self.current_char() == '=' {
-                        self.pos += 1;
-                        return Ok(Token::LessEqual);
-                    }
-                    return Ok(Token::Less);
-                }
-                '!' => {
-                    self.pos += 1;
-                    if self.current_char() == '=' {
-                        self.pos += 1;
-                        return Ok(Token::NotEqual);
-                    }
-                    return Ok(Token::Not);
-                }
-                '&' => {
-                    self.pos += 1;
-                    if self.current_char() == '&' {
-                        self.pos += 1;
-                        return Ok(Token::And);
-                    }
-                }
-                '|' => {
-                    self.pos += 1;
-                    if self.current_char() == '|' {
-                        self.pos += 1;
-                        return Ok(Token::Or);
-                    }
-                }
-                _ => {}
-            }
-
-            if current_char.is_alphanumeric() {
-                return Ok(self.identifier());
-            }
-
-            return Err(eyre!("Invalid character: {}", current_char));
         }
 
-        Ok(Token::Eof)
+        if self.at_end() {
+            return Ok(Token {
+                kind: TokenKind::Eof,
+                lexeme: "EOF".to_string(),
+                literal: None,
+                line: 0,
+            });
+        }
+
+        let current_char = self.current_char();
+        let start = self.pos;
+        self.pos += 1;
+
+        let mut literal: Option<TokenLiteral> = None;
+        let kind = match current_char {
+            '+' => Ok(TokenKind::Plus),
+            '-' => Ok(TokenKind::Minus),
+            '*' => Ok(TokenKind::Multiply),
+            '(' => Ok(TokenKind::LParen),
+            ')' => Ok(TokenKind::RParen),
+            '{' => Ok(TokenKind::LBrace),
+            '}' => Ok(TokenKind::RBrace),
+            ';' => Ok(TokenKind::Semicolon),
+            ',' => Ok(TokenKind::Comma),
+            '/' => {
+                if self.peek_next() == Some('/') {
+                    while self.pos < self.input.len() && self.current_char() != '\n' {
+                        self.pos += 1;
+                    }
+
+                    // Skip the rest of the line
+                    self.pos += 1;
+                }
+                Ok(TokenKind::Divide)
+            }
+            '=' => {
+                if self.current_char() == '=' {
+                    self.pos += 1;
+                    Ok(TokenKind::Equal)
+                } else {
+                    Ok(TokenKind::Assign)
+                }
+            }
+            '>' => {
+                if self.current_char() == '=' {
+                    self.pos += 1;
+                    Ok(TokenKind::GreaterEqual)
+                } else {
+                    Ok(TokenKind::Greater)
+                }
+            }
+            '<' => {
+                if self.current_char() == '=' {
+                    self.pos += 1;
+                    Ok(TokenKind::LessEqual)
+                } else {
+                    Ok(TokenKind::Less)
+                }
+            }
+            '!' => {
+                if self.current_char() == '=' {
+                    self.pos += 1;
+                    Ok(TokenKind::NotEqual)
+                } else {
+                    Ok(TokenKind::Not)
+                }
+            }
+            '&' => {
+                if self.current_char() == '&' {
+                    self.pos += 1;
+                    Ok(TokenKind::And)
+                } else {
+                    Err(eyre!("Invalid character: {}", current_char))
+                }
+            }
+            '|' => {
+                if self.current_char() == '|' {
+                    self.pos += 1;
+                    Ok(TokenKind::Or)
+                } else {
+                    Err(eyre!("Invalid character: {}", current_char))
+                }
+            }
+            '0'..='9' => {
+                self.pos -= 1; // Move back to the start of the number
+                literal = Some(self.number()?);
+                Ok(TokenKind::Number)
+            }
+            '"' => {
+                self.pos -= 1; // Move back to the start of the string
+                literal = Some(self.string()?);
+                Ok(TokenKind::String)
+            }
+            _ => {
+                if current_char.is_alphanumeric() {
+                    self.pos -= 1; // Move back to the start of the identifier
+                    Ok(self.identifier())
+                } else {
+                    Err(eyre!("Invalid character: {}", current_char))
+                }
+            }
+        }?;
+
+        Ok(Token {
+            kind,
+            lexeme: self.input[start..self.pos].to_string(),
+            literal,
+            line: 0,
+        })
     }
 
     fn current_char(&self) -> char {
         self.input[self.pos..].chars().next().unwrap()
     }
 
-    fn skip_whitespace(&mut self) {
-        while self.pos < self.input.len() && self.current_char().is_whitespace() {
-            self.pos += 1;
-        }
-    }
-
-    fn identifier(&mut self) -> Token {
+    fn identifier(&mut self) -> TokenKind {
         let start_pos = self.pos;
         while self.pos < self.input.len() && self.current_char().is_alphanumeric() {
             self.pos += 1;
@@ -198,24 +222,24 @@ impl Lexer<'_> {
 
         let identifier = &self.input[start_pos..self.pos];
         match identifier {
-            "if" => Token::If,
-            "else" => Token::Else,
-            "while" => Token::While,
-            "for" => Token::For,
-            "return" => Token::Return,
-            "function" => Token::Function,
-            "var" => Token::Var,
-            "let" => Token::Let,
-            "const" => Token::Const,
-            "class" => Token::Class,
-            "true" => Token::Boolean(true),
-            "false" => Token::Boolean(false),
-            "null" => Token::Null,
-            _ => Token::Identifier(identifier.to_string()),
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "while" => TokenKind::While,
+            "for" => TokenKind::For,
+            "return" => TokenKind::Return,
+            "function" => TokenKind::Function,
+            "let" => TokenKind::Let,
+            "const" => TokenKind::Const,
+            "class" => TokenKind::Class,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            "nil" => TokenKind::Nil,
+            "print" => TokenKind::Print,
+            _ => TokenKind::Identifier,
         }
     }
 
-    fn string_literal(&mut self) -> Result<String> {
+    fn string(&mut self) -> Result<TokenLiteral> {
         self.pos += 1;
         let start_pos = self.pos;
         while self.pos < self.input.len() && self.current_char() != '"' {
@@ -228,10 +252,10 @@ impl Lexer<'_> {
 
         let string = &self.input[start_pos..self.pos];
         self.pos += 1; // Skip the closing quote
-        Ok(string.to_string())
+        Ok(TokenLiteral::String(string.to_string()))
     }
 
-    fn number(&mut self) -> Result<f64> {
+    fn number(&mut self) -> Result<TokenLiteral> {
         let start_pos = self.pos;
         while self.pos < self.input.len() {
             let current_char = self.current_char();
@@ -251,6 +275,7 @@ impl Lexer<'_> {
         let number_str = &self.input[start_pos..self.pos];
         number_str
             .parse::<f64>()
+            .map(TokenLiteral::Number)
             .map_err(|_| eyre!("Invalid number: {}", number_str))
     }
 
