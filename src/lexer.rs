@@ -1,8 +1,9 @@
-use std::fmt::Display;
+use std::{fmt::Display, hash::Hash};
 
 use color_eyre::eyre::{eyre, Result};
+use ordered_float::OrderedFloat;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum TokenKind {
     // Single-character tokens
     Assign,
@@ -46,12 +47,11 @@ pub enum TokenKind {
     Nil,
     True,
     False,
-    Print,
 
     Eof,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     pub lexeme: String,
@@ -59,12 +59,23 @@ pub struct Token {
     pub line: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq)]
 pub enum Literal {
     String(String),
-    Number(f64),
+    Number(OrderedFloat<f64>),
     Boolean(bool),
     Nil,
+}
+
+impl Hash for Literal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Literal::String(s) => s.hash(state),
+            Literal::Number(n) => n.hash(state),
+            Literal::Boolean(b) => b.hash(state),
+            Literal::Nil => 0.hash(state),
+        }
+    }
 }
 
 impl Display for Literal {
@@ -81,46 +92,50 @@ impl Display for Literal {
 pub struct Lexer<'a> {
     input: &'a str,
     pos: usize,
+    line: usize,
 }
 
 impl Lexer<'_> {
     pub fn new(input: &str) -> Lexer {
-        Lexer { input, pos: 0 }
+        Lexer {
+            input,
+            pos: 0,
+            line: 1,
+        }
     }
 
     pub fn scan(&mut self) -> Result<Vec<Token>> {
         let mut tokens = Vec::new();
 
         while self.pos < self.input.len() {
-            let token = self.next_token()?;
-            tokens.push(token);
+            if let Some(token) = self.next_token()? {
+                let at_end = token.kind == TokenKind::Eof;
+                tokens.push(token);
+                if at_end {
+                    break;
+                }
+            }
         }
 
         Ok(tokens)
     }
 
-    pub fn next_token(&mut self) -> Result<Token> {
+    pub fn next_token(&mut self) -> Result<Option<Token>> {
         // Skip whitespace
         while self.current_char().is_ascii_whitespace() {
+            if self.current_char() == '\n' {
+                self.line += 1;
+            }
             self.pos += 1;
 
             if self.at_end() {
-                return Ok(Token {
+                return Ok(Some(Token {
                     kind: TokenKind::Eof,
-                    lexeme: "EOF".to_string(),
+                    lexeme: String::new(),
                     literal: None,
-                    line: 0,
-                });
+                    line: self.line,
+                }));
             }
-        }
-
-        if self.at_end() {
-            return Ok(Token {
-                kind: TokenKind::Eof,
-                lexeme: "EOF".to_string(),
-                literal: None,
-                line: 0,
-            });
         }
 
         let current_char = self.current_char();
@@ -139,13 +154,14 @@ impl Lexer<'_> {
             ';' => Ok(TokenKind::Semicolon),
             ',' => Ok(TokenKind::Comma),
             '/' => {
-                if self.peek_next() == Some('/') {
+                if self.current_char() == '/' {
                     while self.pos < self.input.len() && self.current_char() != '\n' {
                         self.pos += 1;
                     }
-
                     // Skip the rest of the line
                     self.pos += 1;
+
+                    return Ok(None);
                 }
                 Ok(TokenKind::Divide)
             }
@@ -210,48 +226,62 @@ impl Lexer<'_> {
             _ => {
                 if current_char.is_alphanumeric() {
                     self.pos -= 1; // Move back to the start of the identifier
-                    Ok(self.identifier())
+                    let (kind, lit) = self.identifier();
+                    literal = lit;
+                    Ok(kind)
                 } else {
                     Err(eyre!("Invalid character: {}", current_char))
                 }
             }
         }?;
 
-        Ok(Token {
+        Ok(Some(Token {
             kind,
             lexeme: self.input[start..self.pos].to_string(),
             literal,
-            line: 0,
-        })
+            line: self.line,
+        }))
     }
 
     fn current_char(&self) -> char {
         self.input[self.pos..].chars().next().unwrap()
     }
 
-    fn identifier(&mut self) -> TokenKind {
+    fn identifier(&mut self) -> (TokenKind, Option<Literal>) {
         let start_pos = self.pos;
-        while self.pos < self.input.len() && self.current_char().is_alphanumeric() {
-            self.pos += 1;
+        while self.pos < self.input.len() {
+            if self.current_char().is_alphanumeric() || self.current_char() == '_' {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
 
         let identifier = &self.input[start_pos..self.pos];
-        match identifier {
+        let mut literal: Option<Literal> = None;
+        let kind = match identifier {
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
             "for" => TokenKind::For,
             "return" => TokenKind::Return,
-            "function" => TokenKind::Function,
+            "fn" => TokenKind::Function,
             "let" => TokenKind::Let,
             "const" => TokenKind::Const,
             "class" => TokenKind::Class,
-            "true" => TokenKind::True,
-            "false" => TokenKind::False,
+            "true" => {
+                literal = Some(Literal::Boolean(true));
+                TokenKind::True
+            }
+            "false" => {
+                literal = Some(Literal::Boolean(false));
+                TokenKind::False
+            }
             "nil" => TokenKind::Nil,
-            "print" => TokenKind::Print,
             _ => TokenKind::Identifier,
-        }
+        };
+
+        (kind, literal)
     }
 
     fn string(&mut self) -> Result<Literal> {
@@ -290,13 +320,13 @@ impl Lexer<'_> {
         let number_str = &self.input[start_pos..self.pos];
         number_str
             .parse::<f64>()
-            .map(Literal::Number)
+            .map(|v| Literal::Number(OrderedFloat(v)))
             .map_err(|_| eyre!("Invalid number: {}", number_str))
     }
 
     fn peek_next(&self) -> Option<char> {
         if self.pos + 1 < self.input.len() {
-            Some(self.input[self.pos + 1..].chars().next().unwrap())
+            self.input[self.pos + 1..].chars().next()
         } else {
             None
         }

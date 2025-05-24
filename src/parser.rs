@@ -1,8 +1,8 @@
 use color_eyre::eyre::{eyre, Context, Result};
 
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{Literal, Token, TokenKind};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum Expression {
     Assign(Token, Box<Expression>),
     Binary(Box<Expression>, Token, Box<Expression>),
@@ -10,16 +10,19 @@ pub enum Expression {
     Unary(Token, Box<Expression>),
     Literal(Token),
     Grouping(Box<Expression>),
+    Variable(Token),
+    Call(Box<Expression>, Vec<Expression>),
 }
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    Print(Expression),
+    Expression(Expression),
     Var(Token, Option<Expression>),
     Block(Vec<Statement>),
     Function(Token, Vec<Token>, Box<Statement>),
     If(Expression, Box<Statement>, Option<Box<Statement>>),
     While(Expression, Box<Statement>),
+    Return(Option<Expression>),
 }
 
 pub trait Visitor<T> {
@@ -61,8 +64,6 @@ impl Parser {
             return self.while_statement();
         } else if self.match_token(TokenKind::Return) {
             return self.return_statement();
-        } else if self.match_token(TokenKind::Print) {
-            return self.print_statement();
         }
 
         self.expression_statement()
@@ -175,16 +176,31 @@ impl Parser {
         } else {
             None
         };
-
         self.consume(TokenKind::RParen)
             .wrap_err("Expected ')' after for clauses.")?;
 
         let body = self.statement()?;
+        let body = if let Some(increment) = increment {
+            Statement::Block(vec![body, Statement::Expression(increment)])
+        } else {
+            body
+        };
 
-        Ok(Statement::While(
-            condition.unwrap_or(Expression::Literal(self.peek().clone())),
-            Box::new(body),
-        ))
+        let condition = condition.unwrap_or_else(|| {
+            Expression::Literal(Token {
+                kind: TokenKind::True,
+                lexeme: "true".to_string(),
+                literal: Some(Literal::Boolean(true)),
+                line: 0,
+            })
+        });
+        let body = Statement::While(condition, Box::new(body));
+
+        if let Some(initializer) = initializer {
+            Ok(Statement::Block(vec![initializer, body]))
+        } else {
+            Ok(body)
+        }
     }
 
     fn while_statement(&mut self) -> Result<Statement> {
@@ -212,24 +228,14 @@ impl Parser {
         self.consume(TokenKind::Semicolon)
             .wrap_err("Expected ';' after return value.")?;
 
-        Ok(Statement::Print(
-            value.unwrap_or(Expression::Literal(self.peek().clone())),
-        ))
-    }
-
-    fn print_statement(&mut self) -> Result<Statement> {
-        let value = self.expression()?;
-        self.consume(TokenKind::Semicolon)
-            .wrap_err("Expected ';' after print statement.")?;
-        Ok(Statement::Print(value))
+        Ok(Statement::Return(value))
     }
 
     fn expression_statement(&mut self) -> Result<Statement> {
         let expr = self.expression()?;
-        if self.match_token(TokenKind::Semicolon) {
-            return Ok(Statement::Print(expr));
-        }
-        Err(eyre!("Expected ';'"))
+        self.consume(TokenKind::Semicolon)
+            .wrap_err("Expected ';' after expression.")?;
+        Ok(Statement::Expression(expr))
     }
 
     fn block_statement(&mut self) -> Result<Statement> {
@@ -254,10 +260,14 @@ impl Parser {
 
         if self.match_token(TokenKind::Assign) {
             let value = self.assignment()?;
-            if let Expression::Literal(token) = expr {
-                return Ok(Expression::Assign(token, Box::new(value)));
+            match expr {
+                Expression::Variable(name) => {
+                    return Ok(Expression::Assign(name, Box::new(value)));
+                }
+                _ => {
+                    return Err(eyre!("Invalid assignment target"));
+                }
             }
-            return Err(eyre!("Invalid assignment target"));
         }
 
         Ok(expr)
@@ -276,7 +286,7 @@ impl Parser {
     }
 
     fn and(&mut self) -> Result<Expression> {
-        let mut expr = self.comparison()?;
+        let mut expr = self.equality()?;
 
         while self.match_token(TokenKind::And) {
             let operator = self.previous().clone();
@@ -287,8 +297,20 @@ impl Parser {
         Ok(expr)
     }
 
+    fn equality(&mut self) -> Result<Expression> {
+        let mut expr = self.comparison()?;
+
+        while self.match_token(TokenKind::Equal) || self.match_token(TokenKind::NotEqual) {
+            let operator = self.previous().clone();
+            let right = self.comparison()?;
+            expr = Expression::Binary(Box::new(expr), operator, Box::new(right));
+        }
+
+        Ok(expr)
+    }
+
     fn comparison(&mut self) -> Result<Expression> {
-        let mut expr = self.binary()?;
+        let mut expr = self.term()?;
 
         while self.match_token(TokenKind::Less)
             || self.match_token(TokenKind::Greater)
@@ -296,21 +318,29 @@ impl Parser {
             || self.match_token(TokenKind::GreaterEqual)
         {
             let operator = self.previous().clone();
-            let right = self.binary()?;
+            let right = self.term()?;
             expr = Expression::Binary(Box::new(expr), operator, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn binary(&mut self) -> Result<Expression> {
+    fn term(&mut self) -> Result<Expression> {
+        let mut expr = self.factor()?;
+
+        while self.match_token(TokenKind::Plus) || self.match_token(TokenKind::Minus) {
+            let operator = self.previous().clone();
+            let right = self.factor()?;
+            expr = Expression::Binary(Box::new(expr), operator, Box::new(right));
+        }
+
+        Ok(expr)
+    }
+
+    fn factor(&mut self) -> Result<Expression> {
         let mut expr = self.unary()?;
 
-        while self.match_token(TokenKind::Plus)
-            || self.match_token(TokenKind::Minus)
-            || self.match_token(TokenKind::Multiply)
-            || self.match_token(TokenKind::Divide)
-        {
+        while self.match_token(TokenKind::Multiply) || self.match_token(TokenKind::Divide) {
             let operator = self.previous().clone();
             let right = self.unary()?;
             expr = Expression::Binary(Box::new(expr), operator, Box::new(right));
@@ -320,24 +350,62 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Expression> {
-        if self.match_token(TokenKind::Minus) {
+        if self.match_token(TokenKind::Not) || self.match_token(TokenKind::Minus) {
             let operator = self.previous().clone();
             let right = self.unary()?;
             return Ok(Expression::Unary(operator, Box::new(right)));
         }
-        self.primary()
+        self.call()
+    }
+
+    fn call(&mut self) -> Result<Expression> {
+        let mut expr = self.primary()?;
+
+        loop {
+            if self.match_token(TokenKind::LParen) {
+                expr = self.finish_call(expr)?;
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn finish_call(&mut self, callee: Expression) -> Result<Expression> {
+        let mut arguments = Vec::new();
+
+        if !self.check(TokenKind::RParen) {
+            loop {
+                if arguments.len() >= 255 {
+                    return Err(eyre!("Cannot have more than 255 arguments"));
+                }
+                arguments.push(self.expression()?);
+
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenKind::RParen)
+            .wrap_err("Expected ')' after arguments.")?;
+        Ok(Expression::Call(Box::new(callee), arguments))
     }
 
     fn primary(&mut self) -> Result<Expression> {
         let expr = match self.peek().kind {
             TokenKind::Number
             | TokenKind::String
-            | TokenKind::Identifier
             | TokenKind::True
             | TokenKind::False
             | TokenKind::Nil => {
                 let token = self.advance().clone();
                 Expression::Literal(token)
+            }
+            TokenKind::Identifier => {
+                let token = self.advance().clone();
+                Expression::Variable(token)
             }
             TokenKind::LParen => {
                 self.advance();

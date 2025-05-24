@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use color_eyre::eyre::{Context, Result};
-use parser::{Expression, Statement};
 
+mod builtin;
+mod environment;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -38,18 +39,24 @@ fn repl() -> Result<()> {
 
         let mut parser = parser::Parser::new(tokens.clone());
         let stmts = parser.parse().wrap_err("Failed to parse expression")?;
-
-        let first_stmt = stmts.first().unwrap();
-        let expr = match first_stmt {
-            Statement::Print(expr) => expr,
-            _ => todo!(),
-        };
-
-        let result = interpreter.interpret(expr)?;
-        if let Some(literal) = result {
-            println!("{}", literal);
-        }
+        interpreter.interpret(&stmts)?;
     }
+}
+
+fn run_file(file: PathBuf) -> Result<()> {
+    let mut interpreter = interpreter::Interpreter::new();
+
+    let input = std::fs::read_to_string(&file)
+        .wrap_err_with(|| format!("Failed to read file: {}", file.display()))?;
+
+    let mut lexer = lexer::Lexer::new(&input);
+    let tokens = lexer.scan()?;
+
+    let mut parser = parser::Parser::new(tokens.clone());
+    let stmts = parser.parse().wrap_err("Failed to parse expression")?;
+    interpreter.interpret(&stmts)?;
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -57,8 +64,8 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    if args.file.is_some() {
-        todo!()
+    if let Some(file) = args.file {
+        return run_file(file);
     }
 
     repl()
