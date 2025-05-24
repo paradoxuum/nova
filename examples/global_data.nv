@@ -1,0 +1,7 @@
+let quickMaths = 10;
+quickMaths = quickMaths + 2;
+print(quickMaths);
+
+let floatTest = 1.0;
+floatTest = floatTest + 5;
+print(floatTest);

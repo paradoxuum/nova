@@ -1,0 +1,8 @@
+print(true == false);
+print(true != false);
+print((5 < 10));
+print(!(5 - 4 > 3 * 2 == !false));
+print(true && true);
+print(false && true);
+print((0 < 1) || false);
+print(false || false);

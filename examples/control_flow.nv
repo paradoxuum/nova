@@ -1,0 +1,22 @@
+let is_running = true;
+let shopping_list = "";
+
+while (is_running) {
+    let item = input("add an item to the shopping list: ");
+    if (item == "") {
+        is_running = false;
+    }
+    shopping_list = shopping_list + ", " + item;
+}
+
+print(shopping_list);
+
+if (is_running) {} else {
+    print("else branch reached");
+}
+
+if (true) {
+    if (is_running) {} else {
+        print("nested else branch reached");
+    }
+}
