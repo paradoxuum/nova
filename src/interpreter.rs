@@ -1,10 +1,11 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::eyre;
 
 use crate::{
     builtin::define_builtin_functions,
     environment::{Environment, Value},
+    error::{InterpreterError, NovaError, Result},
     lexer::{Literal, TokenKind},
     parser::{Expression, Statement, Visitor},
 };
@@ -12,27 +13,6 @@ use crate::{
 pub struct Interpreter {
     environment: Rc<RefCell<Environment>>,
     locals: HashMap<Box<Expression>, usize>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum InterpreterError {
-    #[error("Undefined variable '{0}'")]
-    UndefinedVariable(String),
-
-    #[error("Invalid assignment to '{0}'")]
-    InvalidOperation(String),
-
-    #[error("Invalid operands for operator '{0:?}'")]
-    OperatorNotSupported(TokenKind),
-
-    #[error("Return called outside of a function")]
-    ReturnValue(Value),
-
-    #[error("Invalid function call")]
-    InvalidFunctionCall,
-
-    #[error(transparent)]
-    Report(#[from] color_eyre::Report),
 }
 
 pub trait LiteralOperation {
@@ -76,34 +56,34 @@ impl LiteralOperation for Literal {
         match (self, other) {
             (Literal::Number(a), Literal::Number(b)) => Ok(Literal::Number(a + b)),
             (Literal::String(a), Literal::String(b)) => Ok(Literal::String(format!("{}{}", a, b))),
-            _ => Err(eyre!("Invalid operands for addition")),
+            _ => Err(eyre!("Invalid operands for addition").into()),
         }
     }
 
     fn subtract(&self, other: &Self) -> Result<Self> {
         match (self, other) {
             (Literal::Number(a), Literal::Number(b)) => Ok(Literal::Number(a - b)),
-            _ => Err(eyre!("Invalid operands for subtraction")),
+            _ => Err(eyre!("Invalid operands for subtraction").into()),
         }
     }
 
     fn multiply(&self, other: &Self) -> Result<Self> {
         match (self, other) {
             (Literal::Number(a), Literal::Number(b)) => Ok(Literal::Number(a * b)),
-            _ => Err(eyre!("Invalid operands for multiplication")),
+            _ => Err(eyre!("Invalid operands for multiplication").into()),
         }
     }
 
     fn divide(&self, other: &Self) -> Result<Self> {
         match (self, other) {
             (Literal::Number(a), Literal::Number(b)) => Ok(Literal::Number(a / b)),
-            _ => Err(eyre!("Invalid operands for division")),
+            _ => Err(eyre!("Invalid operands for division").into()),
         }
     }
 }
 
-impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
-    fn visit_expression(&mut self, expr: &Expression) -> Result<Option<Value>, InterpreterError> {
+impl Visitor<Result<Option<Value>>> for Interpreter {
+    fn visit_expression(&mut self, expr: &Expression) -> Result<Option<Value>> {
         let output = match expr {
             Expression::Unary(op, right) => {
                 let value = self.visit_expression(right)?;
@@ -123,7 +103,13 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                         Some(Literal::Number(result).into())
                     }
                     None => None,
-                    _ => return Err(InterpreterError::OperatorNotSupported(op.kind.clone())),
+                    _ => {
+                        return Err(InterpreterError::OperatorNotSupported(
+                            op.location.clone(),
+                            op.kind.clone(),
+                        )
+                        .into())
+                    }
                 }
             }
             Expression::Logical(left, op, right) => {
@@ -159,21 +145,11 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
 
                 let left_value = match left_value {
                     Some(Value::Literal(literal)) => literal,
-                    _ => {
-                        return Err(InterpreterError::Report(eyre!(
-                            "Left operand not a literal: {:?}",
-                            left_value
-                        )))
-                    }
+                    _ => return Err(eyre!("Left operand not a literal: {:?}", left_value).into()),
                 };
                 let right_value = match right_value {
                     Some(Value::Literal(literal)) => literal,
-                    _ => {
-                        return Err(InterpreterError::Report(eyre!(
-                            "Right operand not a literal: {:?}",
-                            right_value
-                        )))
-                    }
+                    _ => return Err(eyre!("Right operand not a literal: {:?}", right_value).into()),
                 };
 
                 match op.kind {
@@ -223,7 +199,11 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                 if let Some(value) = self.environment.borrow().get(&name.lexeme) {
                     Some(value.clone())
                 } else {
-                    return Err(InterpreterError::UndefinedVariable(name.lexeme.clone()));
+                    return Err(InterpreterError::UndefinedVariable(
+                        name.location.clone(),
+                        name.lexeme.clone(),
+                    )
+                    .into());
                 }
             }
             Expression::Assign(name, expr) => {
@@ -232,16 +212,9 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                     .unwrap_or(Value::Literal(Literal::Nil));
                 let distance = self.locals.get(expr);
                 if let Some(distance) = distance {
-                    Environment::assign_at(
-                        &self.environment,
-                        *distance,
-                        &name.lexeme,
-                        value.clone(),
-                    )?;
+                    Environment::assign_at(&self.environment, *distance, name, value.clone())?;
                 } else {
-                    self.environment
-                        .borrow_mut()
-                        .assign(&name.lexeme, value.clone())?;
+                    self.environment.borrow_mut().assign(name, value.clone())?;
                 }
                 Some(value)
             }
@@ -252,7 +225,7 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                     if let Some(arg_value) = self.visit_expression(arg)? {
                         arg_values.push(arg_value);
                     } else {
-                        return Err(InterpreterError::Report(eyre!("Argument is not a value")));
+                        return Err(eyre!("Argument is not a value").into());
                     }
                 }
 
@@ -271,7 +244,9 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                     let result = self.visit_statement(&body);
                     self.environment = prev;
                     match result {
-                        Err(InterpreterError::ReturnValue(value)) => Some(value),
+                        Err(NovaError::Interpreter(InterpreterError::ReturnValue(value))) => {
+                            Some(value)
+                        }
                         Ok(_) => Some(Literal::Nil.into()),
                         Err(e) => return Err(e),
                     }
@@ -287,10 +262,10 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                     let result = body(arg_count, &arg_values);
                     match result {
                         Ok(value) => Some(value),
-                        Err(e) => return Err(InterpreterError::Report(e)),
+                        Err(e) => return Err(e),
                     }
                 } else {
-                    return Err(InterpreterError::Report(eyre!("Callee is not a function")));
+                    return Err(eyre!("Callee is not a function").into());
                 }
             }
         };
@@ -298,7 +273,7 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
         Ok(output)
     }
 
-    fn visit_statement(&mut self, stmt: &Statement) -> Result<Option<Value>, InterpreterError> {
+    fn visit_statement(&mut self, stmt: &Statement) -> Result<Option<Value>> {
         match stmt {
             Statement::Expression(expr) => self.visit_expression(expr),
             Statement::Var(name, expr) => {
@@ -362,10 +337,10 @@ impl Visitor<Result<Option<Value>, InterpreterError>> for Interpreter {
                 if let Some(expr) = expr {
                     let value = self.visit_expression(expr)?;
                     if let Some(value) = value {
-                        return Err(InterpreterError::ReturnValue(value));
+                        return Err(InterpreterError::ReturnValue(value).into());
                     }
                 }
-                Err(InterpreterError::ReturnValue(Value::Literal(Literal::Nil)))
+                Err(InterpreterError::ReturnValue(Value::Literal(Literal::Nil)).into())
             }
         }
     }

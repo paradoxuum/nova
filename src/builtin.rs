@@ -1,9 +1,10 @@
 use std::io::Write;
 
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::eyre;
 
 use crate::{
     environment::{Environment, Value},
+    error::Result,
     lexer::Literal,
 };
 
@@ -43,7 +44,8 @@ fn input_fn(_: usize, args: &[Value]) -> Result<Value> {
             return Err(eyre!(
                 "Expected a string or nil as the first argument, got: {}",
                 args[0]
-            ))
+            )
+            .into())
         }
     };
 

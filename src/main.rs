@@ -6,6 +6,7 @@ use color_eyre::eyre::{Context, Result};
 
 mod builtin;
 mod environment;
+mod error;
 mod interpreter;
 mod lexer;
 mod parser;

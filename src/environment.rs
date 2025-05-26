@@ -5,9 +5,8 @@ use std::{
     rc::Rc,
 };
 
-use color_eyre::eyre::{eyre, Result};
-
 use crate::{
+    error::{InterpreterError, Result},
     lexer::{Literal, Token},
     parser::Statement,
 };
@@ -61,19 +60,22 @@ impl Environment {
         }))
     }
 
-    pub fn assign(&mut self, name: &str, value: Value) -> Result<()> {
+    pub fn assign(&mut self, token: &Token, value: Value) -> Result<()> {
         if let std::collections::hash_map::Entry::Occupied(mut e) =
-            self.variables.entry(name.to_owned())
+            self.variables.entry(token.lexeme.clone())
         {
             e.insert(value);
             return Ok(());
         }
 
         if let Some(ref mut enclosing) = self.parent {
-            return enclosing.borrow_mut().assign(name, value);
+            return enclosing.borrow_mut().assign(token, value);
         }
 
-        Err(eyre!("Undefined variable '{}'", name))
+        Err(
+            InterpreterError::UndefinedVariable(token.location.clone(), token.lexeme.clone())
+                .into(),
+        )
     }
 
     /// Walk up `distance` steps of `parent` pointers and return that `EnvPtr`.
@@ -94,18 +96,18 @@ impl Environment {
         current
     }
 
-    pub fn assign_at(env: &EnvPtr, distance: usize, name: &str, value: Value) -> Result<()> {
+    pub fn assign_at(env: &EnvPtr, distance: usize, token: &Token, value: Value) -> Result<()> {
         let target_env = Environment::ancestor(env, distance);
         let mut targ = target_env.borrow_mut();
 
-        let name = name.to_owned();
+        let name = token.lexeme.to_owned();
         if let std::collections::hash_map::Entry::Occupied(mut e) =
             targ.variables.entry(name.clone())
         {
             e.insert(value);
             Ok(())
         } else {
-            Err(eyre!("Undefined variable '{}'", name))
+            Err(InterpreterError::UndefinedVariable(token.location.clone(), name).into())
         }
     }
 

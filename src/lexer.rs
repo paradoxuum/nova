@@ -1,7 +1,8 @@
 use std::{fmt::Display, hash::Hash};
 
-use color_eyre::eyre::{eyre, Result};
 use ordered_float::OrderedFloat;
+
+use crate::error::{LexerError, Result};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum TokenKind {
@@ -52,11 +53,17 @@ pub enum TokenKind {
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct Location {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     pub lexeme: String,
     pub literal: Option<Literal>,
-    pub line: usize,
+    pub location: Location,
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -65,6 +72,12 @@ pub enum Literal {
     Number(OrderedFloat<f64>),
     Boolean(bool),
     Nil,
+}
+
+impl Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "line {}, column {}", self.line, self.column)
+    }
 }
 
 impl Hash for Literal {
@@ -93,6 +106,7 @@ pub struct Lexer<'a> {
     input: &'a str,
     pos: usize,
     line: usize,
+    column: usize,
 }
 
 impl Lexer<'_> {
@@ -101,6 +115,7 @@ impl Lexer<'_> {
             input,
             pos: 0,
             line: 1,
+            column: 1,
         }
     }
 
@@ -125,22 +140,26 @@ impl Lexer<'_> {
         while self.current_char().is_ascii_whitespace() {
             if self.current_char() == '\n' {
                 self.line += 1;
+                self.column = 1;
             }
-            self.pos += 1;
+            self.advance();
 
             if self.at_end() {
                 return Ok(Some(Token {
                     kind: TokenKind::Eof,
                     lexeme: String::new(),
                     literal: None,
-                    line: self.line,
+                    location: Location {
+                        line: self.line,
+                        column: self.column,
+                    },
                 }));
             }
         }
 
         let current_char = self.current_char();
         let start = self.pos;
-        self.pos += 1;
+        self.advance();
 
         let mut literal: Option<Literal> = None;
         let kind = match current_char {
@@ -156,18 +175,16 @@ impl Lexer<'_> {
             '/' => {
                 if self.current_char() == '/' {
                     while self.pos < self.input.len() && self.current_char() != '\n' {
-                        self.pos += 1;
+                        self.advance();
                     }
-                    // Skip the rest of the line
-                    self.pos += 1;
-
+                    self.advance();
                     return Ok(None);
                 }
                 Ok(TokenKind::Divide)
             }
             '=' => {
                 if self.current_char() == '=' {
-                    self.pos += 1;
+                    self.advance();
                     Ok(TokenKind::Equal)
                 } else {
                     Ok(TokenKind::Assign)
@@ -175,7 +192,7 @@ impl Lexer<'_> {
             }
             '>' => {
                 if self.current_char() == '=' {
-                    self.pos += 1;
+                    self.advance();
                     Ok(TokenKind::GreaterEqual)
                 } else {
                     Ok(TokenKind::Greater)
@@ -183,7 +200,7 @@ impl Lexer<'_> {
             }
             '<' => {
                 if self.current_char() == '=' {
-                    self.pos += 1;
+                    self.advance();
                     Ok(TokenKind::LessEqual)
                 } else {
                     Ok(TokenKind::Less)
@@ -191,7 +208,7 @@ impl Lexer<'_> {
             }
             '!' => {
                 if self.current_char() == '=' {
-                    self.pos += 1;
+                    self.advance();
                     Ok(TokenKind::NotEqual)
                 } else {
                     Ok(TokenKind::Not)
@@ -199,38 +216,47 @@ impl Lexer<'_> {
             }
             '&' => {
                 if self.current_char() == '&' {
-                    self.pos += 1;
+                    self.advance();
                     Ok(TokenKind::And)
                 } else {
-                    Err(eyre!("Invalid character: {}", current_char))
+                    Err(LexerError::UnexpectedCharacter(
+                        self.current_char(),
+                        self.location(),
+                    ))
                 }
             }
             '|' => {
                 if self.current_char() == '|' {
-                    self.pos += 1;
+                    self.advance();
                     Ok(TokenKind::Or)
                 } else {
-                    Err(eyre!("Invalid character: {}", current_char))
+                    Err(LexerError::UnexpectedCharacter(
+                        self.current_char(),
+                        self.location(),
+                    ))
                 }
             }
             '0'..='9' => {
-                self.pos -= 1; // Move back to the start of the number
+                self.back();
                 literal = Some(self.number()?);
                 Ok(TokenKind::Number)
             }
             '"' => {
-                self.pos -= 1; // Move back to the start of the string
+                self.back();
                 literal = Some(self.string()?);
                 Ok(TokenKind::String)
             }
             _ => {
                 if current_char.is_alphanumeric() {
-                    self.pos -= 1; // Move back to the start of the identifier
+                    self.back();
                     let (kind, lit) = self.identifier();
                     literal = lit;
                     Ok(kind)
                 } else {
-                    Err(eyre!("Invalid character: {}", current_char))
+                    Err(LexerError::UnexpectedCharacter(
+                        current_char,
+                        self.location(),
+                    ))
                 }
             }
         }?;
@@ -239,7 +265,7 @@ impl Lexer<'_> {
             kind,
             lexeme: self.input[start..self.pos].to_string(),
             literal,
-            line: self.line,
+            location: self.location(),
         }))
     }
 
@@ -292,7 +318,7 @@ impl Lexer<'_> {
         }
 
         if self.at_end() {
-            return Err(eyre!("Unterminated string literal"));
+            return Err(LexerError::UnterminatedString(self.location()).into());
         }
 
         let string = &self.input[start_pos..self.pos];
@@ -321,7 +347,7 @@ impl Lexer<'_> {
         number_str
             .parse::<f64>()
             .map(|v| Literal::Number(OrderedFloat(v)))
-            .map_err(|_| eyre!("Invalid number: {}", number_str))
+            .map_err(|_| LexerError::InvalidNumber(number_str.into(), self.location()).into())
     }
 
     fn peek_next(&self) -> Option<char> {
@@ -334,5 +360,71 @@ impl Lexer<'_> {
 
     fn at_end(&self) -> bool {
         self.pos >= self.input.len()
+    }
+
+    fn advance(&mut self) {
+        if self.at_end() {
+            return;
+        }
+
+        self.pos += 1;
+        self.column += 1;
+    }
+
+    fn back(&mut self) {
+        if self.pos > 0 {
+            self.pos -= 1;
+            self.column -= 1;
+        }
+    }
+
+    fn location(&self) -> Location {
+        Location {
+            line: self.line,
+            column: self.column,
+        }
+    }
+}
+
+impl Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenKind::Assign => write!(f, "="),
+            TokenKind::Plus => write!(f, "+"),
+            TokenKind::Minus => write!(f, "-"),
+            TokenKind::Multiply => write!(f, "*"),
+            TokenKind::Divide => write!(f, "/"),
+            TokenKind::LParen => write!(f, "("),
+            TokenKind::RParen => write!(f, ")"),
+            TokenKind::LBrace => write!(f, "{{"),
+            TokenKind::RBrace => write!(f, "}}"),
+            TokenKind::Semicolon => write!(f, ";"),
+            TokenKind::Comma => write!(f, ","),
+            TokenKind::And => write!(f, "&&"),
+            TokenKind::Or => write!(f, "||"),
+            TokenKind::Not => write!(f, "!"),
+            TokenKind::Equal => write!(f, "=="),
+            TokenKind::NotEqual => write!(f, "!="),
+            TokenKind::Greater => write!(f, ">"),
+            TokenKind::Less => write!(f, "<"),
+            TokenKind::GreaterEqual => write!(f, ">="),
+            TokenKind::LessEqual => write!(f, "<="),
+            TokenKind::Identifier
+            | TokenKind::String
+            | TokenKind::Number
+            | TokenKind::If
+            | TokenKind::Else
+            | TokenKind::While
+            | TokenKind::For
+            | TokenKind::Return
+            | TokenKind::Function
+            | TokenKind::Let
+            | TokenKind::Const
+            | TokenKind::Class
+            | TokenKind::Nil
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Eof => write!(f, "{:?}", self),
+        }
     }
 }

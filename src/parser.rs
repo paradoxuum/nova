@@ -1,6 +1,9 @@
-use color_eyre::eyre::{eyre, Context, Result};
+use color_eyre::eyre::Context;
 
-use crate::lexer::{Literal, Token, TokenKind};
+use crate::{
+    error::{ParseError, Result},
+    lexer::{Literal, Location, Token, TokenKind},
+};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum Expression {
@@ -92,7 +95,12 @@ impl Parser {
         };
 
         if !self.match_token(TokenKind::Semicolon) {
-            return Err(eyre!("Expected ';'"));
+            return Err(ParseError::ExpectedToken(
+                TokenKind::Semicolon,
+                self.location(),
+                self.peek().kind.clone(),
+            )
+            .into());
         }
 
         Ok(Statement::Var(name, initializer))
@@ -104,13 +112,14 @@ impl Parser {
             .wrap_err("Expected function name.")?
             .clone();
 
-        self.consume(TokenKind::LParen)
-            .wrap_err("Expected '(' after function name.")?;
+        self.consume(TokenKind::LParen)?;
 
         let mut params = Vec::new();
         while !self.check(TokenKind::RParen) {
             if params.len() >= 255 {
-                return Err(eyre!("Cannot have more than 255 parameters"));
+                return Err(
+                    ParseError::TooManyParameters(self.location(), 255, params.len()).into(),
+                );
             }
 
             let param = self.consume(TokenKind::Identifier)?.clone();
@@ -120,26 +129,21 @@ impl Parser {
             }
         }
 
-        self.consume(TokenKind::RParen)
-            .wrap_err("Expected ')' after parameters.")?;
-
-        self.consume(TokenKind::LBrace)
-            .wrap_err("Expected '{' before function body.")?;
+        self.consume(TokenKind::RParen)?;
+        self.consume(TokenKind::LBrace)?;
 
         let body = self.block_statement()?;
         Ok(Statement::Function(name, params, Box::new(body)))
     }
 
     fn if_statement(&mut self) -> Result<Statement> {
-        self.consume(TokenKind::LParen)
-            .wrap_err("Expected '(' after 'if'.")?;
+        self.consume(TokenKind::LParen)?;
 
         let condition = self
             .expression()
             .wrap_err("Expected condition after 'if'.")?;
 
-        self.consume(TokenKind::RParen)
-            .wrap_err("Expected ')' after condition.")?;
+        self.consume(TokenKind::RParen)?;
 
         let then_branch = self.statement()?;
         let else_branch = if self.match_token(TokenKind::Else) {
@@ -151,8 +155,7 @@ impl Parser {
     }
 
     fn for_statement(&mut self) -> Result<Statement> {
-        self.consume(TokenKind::LParen)
-            .wrap_err("Expected '(' after 'for'.")?;
+        self.consume(TokenKind::LParen)?;
 
         let initializer = if self.match_token(TokenKind::Semicolon) {
             None
@@ -168,16 +171,14 @@ impl Parser {
             None
         };
 
-        self.consume(TokenKind::Semicolon)
-            .wrap_err("Expected ';' after loop condition.")?;
+        self.consume(TokenKind::Semicolon)?;
 
         let increment = if !self.check(TokenKind::RParen) {
             Some(self.expression()?)
         } else {
             None
         };
-        self.consume(TokenKind::RParen)
-            .wrap_err("Expected ')' after for clauses.")?;
+        self.consume(TokenKind::RParen)?;
 
         let body = self.statement()?;
         let body = if let Some(increment) = increment {
@@ -191,7 +192,7 @@ impl Parser {
                 kind: TokenKind::True,
                 lexeme: "true".to_string(),
                 literal: Some(Literal::Boolean(true)),
-                line: 0,
+                location: self.location(),
             })
         });
         let body = Statement::While(condition, Box::new(body));
@@ -204,16 +205,13 @@ impl Parser {
     }
 
     fn while_statement(&mut self) -> Result<Statement> {
-        self.consume(TokenKind::LParen)
-            .wrap_err("Expected '(' after 'while'.")?;
+        self.consume(TokenKind::LParen)?;
 
         let condition = self
             .expression()
             .wrap_err("Expected condition after 'while'.")?;
 
-        self.consume(TokenKind::RParen)
-            .wrap_err("Expected ')' after condition.")?;
-
+        self.consume(TokenKind::RParen)?;
         let body = self.statement()?;
         Ok(Statement::While(condition, Box::new(body)))
     }
@@ -225,16 +223,13 @@ impl Parser {
             None
         };
 
-        self.consume(TokenKind::Semicolon)
-            .wrap_err("Expected ';' after return value.")?;
-
+        self.consume(TokenKind::Semicolon)?;
         Ok(Statement::Return(value))
     }
 
     fn expression_statement(&mut self) -> Result<Statement> {
         let expr = self.expression()?;
-        self.consume(TokenKind::Semicolon)
-            .wrap_err("Expected ';' after expression.")?;
+        self.consume(TokenKind::Semicolon)?;
         Ok(Statement::Expression(expr))
     }
 
@@ -245,9 +240,7 @@ impl Parser {
             statements.push(self.declaration()?);
         }
 
-        self.consume(TokenKind::RBrace)
-            .wrap_err("Expected '}' after block.")?;
-
+        self.consume(TokenKind::RBrace)?;
         Ok(Statement::Block(statements))
     }
 
@@ -265,7 +258,7 @@ impl Parser {
                     return Ok(Expression::Assign(name, Box::new(value)));
                 }
                 _ => {
-                    return Err(eyre!("Invalid assignment target"));
+                    return Err(ParseError::InvalidAssignment(self.location()).into());
                 }
             }
         }
@@ -378,7 +371,12 @@ impl Parser {
         if !self.check(TokenKind::RParen) {
             loop {
                 if arguments.len() >= 255 {
-                    return Err(eyre!("Cannot have more than 255 arguments"));
+                    return Err(ParseError::TooManyParameters(
+                        self.location(),
+                        255,
+                        arguments.len(),
+                    )
+                    .into());
                 }
                 arguments.push(self.expression()?);
 
@@ -411,11 +409,16 @@ impl Parser {
                 self.advance();
                 let expr = self.expression()?;
                 if !self.match_token(TokenKind::RParen) {
-                    return Err(eyre!("Expected ')'"));
+                    return Err(ParseError::ExpectedToken(
+                        TokenKind::RParen,
+                        self.location(),
+                        self.peek().kind.clone(),
+                    )
+                    .into());
                 }
                 Expression::Grouping(Box::new(expr))
             }
-            _ => return Err(eyre!("Expected expression")),
+            _ => return Err(ParseError::ExpectedExpression(self.location()).into()),
         };
 
         Ok(expr)
@@ -448,7 +451,9 @@ impl Parser {
         if self.check(kind.clone()) {
             return Ok(self.advance());
         }
-        Err(eyre!("Expected token: {:?}", kind))
+
+        let current = self.peek().clone();
+        Err(ParseError::ExpectedToken(kind, current.location, current.kind).into())
     }
 
     fn is_at_end(&self) -> bool {
@@ -457,6 +462,10 @@ impl Parser {
 
     fn peek(&self) -> &Token {
         &self.tokens[self.current]
+    }
+
+    fn location(&self) -> Location {
+        self.peek().location.clone()
     }
 
     fn previous(&self) -> &Token {
