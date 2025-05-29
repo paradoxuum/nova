@@ -125,12 +125,22 @@ impl Lexer<'_> {
         while self.pos < self.input.len() {
             if let Some(token) = self.next_token()? {
                 let at_end = token.kind == TokenKind::Eof;
-                tokens.push(token);
                 if at_end {
                     break;
                 }
+                tokens.push(token);
             }
         }
+
+        tokens.push(Token {
+            kind: TokenKind::Eof,
+            lexeme: String::new(),
+            literal: None,
+            location: Location {
+                line: self.line,
+                column: self.column,
+            },
+        });
 
         Ok(tokens)
     }
