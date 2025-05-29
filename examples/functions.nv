@@ -1,0 +1,12 @@
+let global_value = 1;
+
+print(global_value);
+
+fn add(x, y) {
+    let value = x * y;
+    global_value = global_value * value;
+    return value;
+}
+
+print(add(4, 4));
+print(global_value);
